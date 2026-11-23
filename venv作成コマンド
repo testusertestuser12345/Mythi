@@ -1,0 +1,15 @@
+# venv を作成（プロジェクトのディレクトリで）
+python3 -m venv venv
+
+# 有効化（Linux / macOS）
+source venv/bin/activate
+
+# Windows の場合
+# venv\Scripts\activate
+
+
+# pip を最新に
+pip install --upgrade pip
+
+# Mythic のスクリプトライブラリ（これが本体）
+pip install mythic
