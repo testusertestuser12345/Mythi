@@ -141,4 +141,18 @@ agent-fork/commands/native.go の switch cmd.Command { の中に追記
 定義を足す
 定義ファイル container/commands/〇〇〇.go（新規作成）
 
-一覧に登録 container/commands/commands.go の Commands() の append 一覧に 〇〇〇() を追加
+一覧に登録 
+container/commands/commands.go の Commands() の append 一覧に 〇〇〇() を追加
+
+
+Go の依存関係解決ファイル（go.mod）に replace ディレクティブを追記して、公式の merlin-agent/v2 パッケージではなく、先ほどクローンしたローカルの ../agent-fork を使うように切り替えるための設定
+
+echo 'replace github.com/Ne0nd0g/merlin-agent/v2 => ../agent-fork' \
+  | sudo tee -a ~/Mythic/InstalledServices/merlin/agent/go.mod
+
+なぜこれを行うのか
+~/Mythic/InstalledServices/merlin/agent/ 側のプログラム（ペイロードビルド時にコンパイルされる本体）は、通常 go.mod に書かれた外部モジュール [github.com/Ne0nd0g/merlin-agent/v2](https://github.com/Ne0nd0g/merlin-agent/v2) を参照してビルドされます。
+
+ローカルで agent-fork 内の Go ソースを編集しただけでは、ビルド時に依然としてキャッシュ済みの公式版（または GitHub 上の版）が使われてしまいます。
+
+go.mod に replace を入れることで、agent-fork に加えたコード変更がそのままエージェントのビルド結果に反映されるようになります
