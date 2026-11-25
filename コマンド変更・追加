@@ -1,0 +1,144 @@
+すべて消す
+
+sudo docker builder prune --all -f
+sudo docker system prune -a --volumes -f
+
+sudo docker builder prune --all -f
+sudo docker system prune -a --volumes -f
+
+sudo git clone https://github.com/its-a-feature/Mythic.git
+cd Mythic
+sudo make
+sudo ./mythic-cli start
+
+
+memfd変更
+
+	sudo sed -i 's|image: ghcr.io/mythicagents/merlin:v2.5.1|build:\n      context: /home/kali/Mythic/InstalledServices/merlin\n      dockerfile: Dockerfile\n    image: merlin:local|' ~/Mythic/docker-compose.yml
+
+	sudo sed -i \
+	 -e 's|^      context: /home/kali/Mythic/InstalledServices/merlin$|          context: /home/kali/Mythic/InstalledServices/merlin|' \
+	 -e 's|^      dockerfile: Dockerfile$|          dockerfile: Dockerfile|' \
+	 -e 's|^    image: merlin:local$|        image: merlin:local|' \
+	 ~/Mythic/docker-compose.yml
+
+ワンライナー
+sudo sed -i -E 's|^([[:space:]]*)image:[[:space:]]*ghcr\.io/mythicagents/merlin:[^[:space:]]+|\1build:\n\1  context: /home/kali/Mythic/InstalledServices/merlin\n\1  dockerfile: Dockerfile\n\1image: merlin:local|' ~/Mythic/docker-compose.yml
+
+上記の説明
+sed ワンライナーは、/home/kali/Mythic/docker-compose.yml にある merlin サービスの「既製イメージ取得指定」を「ローカルの Dockerfile からビルドして merlin:local イメージを作る指定」に書き換えています
+
+書き換え後（ローカルのソースからビルドして merlin:local を使う設定）
+
+merlin:
+      container_name: merlin
+      hostname: merlin
+      build:
+        context: /home/kali/Mythic/InstalledServices/merlin
+        dockerfile: Dockerfile
+      image: merlin:local
+
+エージェントの Go ソースを自分で改造・カスタマイズしたとき、そのまま mythic-cli で起動・ビルドすると GHCR の既製イメージ（ghcr.io/mythicagents/merlin:...）が使われて自作コードが反映されないことがあります。
+
+build:（context と dockerfile）を追加して image: merlin:local に変えることで、/home/kali/Mythic/InstalledServices/merlin 内のコードをもとにローカルでビルドしたイメージを使うようにできます
+
+
+memfd.goの編集(conten配下)
+
+
+
+
+
+編集後
+cd ~/Mythic
+sudo docker compose build merlin                       # ← merlin:local を実際に作る（数分かかれば本物）
+sudo docker compose up -d --force-recreate merlin  
+
+docker-compose.yml に書いたローカルビルド設定（build: と image: merlin:local）を使って、カスタムした Merlin コンテナイメージを実際にビルドし、稼働中のコンテナを作り直して反映する一連のコマンド
+
+sudo docker compose build merlin
+
+docker-compose.yml の merlin サービスに書かれた context と dockerfile をもとに、ローカルで merlin:local イメージをビルドします。
+
+Go の依存取得やコンパイルが走るため数分ほどかかることがあり、実際にビルドが進めばローカルのソースが読み込まれています。キャッシュを使わず完全にやり直したい場合は --no-cache を付けます。
+
+sudo docker compose up -d --force-recreate merlin
+
+新しくビルドされた merlin:local イメージを使って merlin コンテナを強制再作成（--force-recreate）し、バックグラウンド（-d）で起動し直します。
+
+既存コンテナを使い回さずに作り直すため、ビルド後のイメージや設定変更が確実に反映されます。
+
+
+変更して実行したが
+エラーが
+
+原因
+3つの画像を見ると、.py / .sh / バイナリで「受け取った6個の引数（[1] <-n>, [2] <"Taro, [3] <Yamada">, [4] <-c>, [5] <2>, [6] <x.txt>）」自体は全く同じなのに、各プログラム側のオプション解析ライブラリ（getopt_long / getopts / argparse）の仕様差と、"Taro Yamada" が分割されてしまっていることが重なって結果がズレています。   なぜ3つで結果が違うのかバイナリ（getopt_long）   -n に "Taro、-c に 2 を割り当てつつ、オプション以外の Yamada" と /tmp/x.txt を後ろにずらして「ファイル2個」として解釈しています。   シェルスクリプト（getopts）   getopts はオプション以外の引数（Yamada"）が出た時点でオプション解析を打ち切るため、後ろの -c 2 がオプションとして読まれず 回数 = 1 になり、Yamada" -c 2 x.txt の4つがファイル扱いになっています。   Python（argparse）   -n に "Taro、-c に 2 を読んだあと、余った位置引数（Yamada" や x.txt）を受け付ける定義になっていないためエラー（終了コード2）になっています。   
+
+
+
+さらに変更
+
+うまくいったようでよかったです！画像で見せてくれた `.py` / `.sh` / バイナリの挙動も踏まえて、どこをどう変えたのか、そしてどう動いているのかを整理して説明します。
+
+### 1. 元のコードで起きていた問題
+
+* 元の `memfdCreateTask` では、引数文字列を `strings.Fields(args)` で分割していました。
+* `strings.Fields` は**空白文字だけで単純分割**するため、`-n "Taro Yamada" -c 2 x.txt` のような入力を入れると、引用符の中身も `<-n>`, `<"Taro`, `<Yamada">`, `<-c>`, `<2>`, `<x.txt>` のようにバラバラの要素になっていました。
+
+
+* その結果、受け取る引数配列がズレ、`.py` / `.sh` / バイナリそれぞれのパーサ（`argparse` / `getopts` / `getopt_long`）で解釈が変わったりエラーになったりしていました。
+
+
+
+---
+
+### 2. 変更した箇所（`memfd.go` の中だけ）
+
+#### ① `splitArgs(input string)` を追加
+
+* 引数文字列を1文字ずつ走査し、状態フラグ（`inSingle` / `inDouble` / `escaped` / `hasToken`）で区切り方を制御するようにしました。
+* **ダブルクォート `"..."` の中**: 空白があっても区切らず、1つの引数（例: `Taro Yamada`）としてまとめます。中の `\"` や `\\` といったエスケープも扱えます。
+* **シングルクォート `'...'` の中**: 閉じ `'` が来るまで中の文字をそのまま1つの引数として扱います。
+* **クォートの外にある空白・タブ・改行**: そこまで溜めていた文字を1つの引数として確定し、次の引数へ進みます。
+* **閉じ忘れのチェック**: クォートが閉じられていない場合はエラーを返して安全に失敗させるようにしています。
+
+#### ② `memfdCreateTask` の分割処理を差し替え
+
+* `strings.Fields(args)` をやめて、`splitArgs(args)` を呼ぶように変更しました。
+* `splitArgs` が返した引数のスライス（`parsedArgs...`）を `job.Args` に追加し、そのまま `ConvertMerlinJobToMythicTask` → `task.Args.SetManualArgs(mythicJob)` でエージェントへ渡す流れにしています。
+
+---
+
+### 3. なぜこれで `.py` / `.sh` / バイナリが揃って動くようになったのか
+
+* `memfd` は実行ファイルをメモリ上に展開して `execve` 系で起動する仕組みのため、**引用符で囲まれた部分が1つの `argv` 要素として正しく配列に入っていれば**、シェルを介さなくてもプログラム側に意図通りの引数配列が届きます。
+
+
+* つまり、「送信側（`memfd.go`）で引数配列を正しく組み立てる」だけで、実行対象がバイナリでもスクリプトでも同じ引数境界で受け取れるようになります。
+
+
+
+※ もし各プログラム側で「そもそも受け取れるオプションや位置引数の仕様自体が違う」ケース（たとえば `target.py` 側に `x.txt` を受ける positional 引数が定義されていない場合など）は、各プログラム側の引数定義自体も合わせる必要があります。
+
+---
+
+
+
+
+
+
+コマンド追加の場合　＋
+cd ~/Mythic/InstalledServices/merlin 
+        
+sudo git clone https://github.com/Ne0nd0g/merlin-agent agent-fork
+
+このコマンドは、Merlin コンテナ（~/Mythic/InstalledServices/merlin）のビルドディレクトリ内に、Merlin エージェント本体のソースコード（merlin-agent）を agent-fork という別フォルダ名で取得（クローン）して、エージェント側（ターゲット上で動くバイナリ側）を独自に改造・ビルドできるようにするために行います
+
+コマンド追加
+agent-fork/commands/native.go の switch cmd.Command { の中に追記
+
+定義を足す
+定義ファイル container/commands/〇〇〇.go（新規作成）
+
+一覧に登録 container/commands/commands.go の Commands() の append 一覧に 〇〇〇() を追加
